@@ -70,9 +70,11 @@ export class Police {
   spawnHelicopter(px, pz) {
     if (this.heli) return;
     const mesh = makeHelicopter();
-    mesh.position.set(px + 30, 46, pz - 20);
+    // Start ahead of the player (in the chase camera's view), on a wide
+    // low orbit that keeps the helicopter inside the frame.
+    mesh.position.set(px, 22, pz + 48);
     this.scene.add(mesh);
-    this.heli = { mesh, angle: 0, height: 46 };
+    this.heli = { mesh, angle: Math.PI / 2, height: 22 };
   }
 
   spawnTank(px, pz, at = null) {
@@ -244,17 +246,22 @@ export class Police {
     }
 
     // --- Helicopter: circle above the player, spotlight -----------------
+    // Wide low orbit (r 48, height 22): the helicopter stays inside the
+    // chase camera's frame instead of flying above it.
     if (this.heli) {
       const h = this.heli;
       h.angle += dt * 0.35;
-      const r = 26;
+      const r = 48;
       h.mesh.position.set(
         px + Math.cos(h.angle) * r,
         h.height + Math.sin(h.angle * 0.7) * 3,
         pz + Math.sin(h.angle) * r);
       h.mesh.rotation.y = Math.atan2(px - h.mesh.position.x, pz - h.mesh.position.z);
       h.mesh.userData.rotor.rotation.y += dt * 22;
-      h.mesh.userData.tailRotor.rotation.z += dt * 18;
+      h.mesh.userData.tailRotor.rotation.x += dt * 18;
+      // Red anti-collision beacon flashes.
+      const bc = h.mesh.userData.beacon;
+      if (bc) bc.material.emissiveIntensity = (Math.floor(this.lightPhase * 3) % 2 === 0) ? 3 : 0.25;
     }
 
     // --- Tank: slow, heavy, rams ----------------------------------------
@@ -297,7 +304,7 @@ export class Police {
         cls: c.state === 'pit' ? 'pit' : (c.dist < 12 ? 'box' : 'pursuit'),
       });
     }
-    if (this.heli) list.push({ call: 'HALCON-1', kind: 'AIR', dist: 26, status: 'OVERHEAD', cls: 'air' });
+    if (this.heli) list.push({ call: 'HALCON-1', kind: 'AIR', dist: 48, status: 'OVERHEAD', cls: 'air' });
     if (this.tank) list.push({ call: 'BRAVO-6', kind: 'TANK', dist: Math.round(this.tank.dist || 0), status: 'PURSUIT', cls: 'pursuit' });
     return list.slice(0, 5);
   }

@@ -590,12 +590,13 @@ function applyShotPreset(game) {
   const p = game.player;
   if (SHOT === 'cover') {
     // Facing south down Avenida del Sol toward the pier + Ferris wheel,
-    // cruisers in pursuit behind and one ahead, helicopter overhead.
+    // cruisers in pursuit ahead and flanking (in frame), helicopter
+    // overhead ahead, roadblock further up the avenue.
     p.spawnCar(30, 60, Math.PI);
     p.speed = 26;
     game.police.addHeat(45, 'shot preset');
-    game.police.spawnCruiser(p.x, p.z, { x: p.x - 3, z: p.z - 32 });
-    game.police.spawnCruiser(p.x, p.z, { x: p.x + 5, z: p.z + 48 });
+    game.police.spawnCruiser(p.x, p.z, { x: p.x - 7, z: p.z + 20 });
+    game.police.spawnCruiser(p.x, p.z, { x: p.x + 8, z: p.z + 42 });
     game.police.spawnHelicopter(p.x, p.z);
     game.police.placeRoadblock(p.x, p.z, p.heading);
     game.missions.setMission(0);
@@ -613,10 +614,10 @@ function applyShotPreset(game) {
     p.spawnCar(30, 40, Math.PI);
     p.speed = 20;
     game.police.addHeat(100, 'shot preset');
-    game.police.spawnCruiser(p.x, p.z, { x: p.x - 5, z: p.z - 30 });
-    game.police.spawnCruiser(p.x, p.z, { x: p.x + 6, z: p.z + 42 });
+    game.police.spawnCruiser(p.x, p.z, { x: p.x - 7, z: p.z + 20 });
+    game.police.spawnCruiser(p.x, p.z, { x: p.x + 8, z: p.z + 38 });
     game.police.spawnHelicopter(p.x, p.z);
-    game.police.spawnTank(p.x, p.z, { x: p.x - 8, z: p.z + 60 });
+    game.police.spawnTank(p.x, p.z, { x: p.x - 5, z: p.z + 52 });
     game.police.placeRoadblock(p.x, p.z, p.heading);
     game.missions.setMission(2);
     game.missions.stageIndex = 1; // SURVIVE
