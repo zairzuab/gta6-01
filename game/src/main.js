@@ -25,6 +25,10 @@ class Game {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // ACES filmic tone mapping + a touch of extra exposure: warmer, more
+    // polished highlights than the flat default look.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.12;
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 900);
     this.clock = new THREE.Clock();
@@ -617,13 +621,36 @@ function applyShotPreset(game) {
     game.police.spawnCruiser(p.x, p.z, { x: p.x - 7, z: p.z + 20 });
     game.police.spawnCruiser(p.x, p.z, { x: p.x + 8, z: p.z + 38 });
     game.police.spawnHelicopter(p.x, p.z);
-    game.police.spawnTank(p.x, p.z, { x: p.x - 5, z: p.z + 52 });
+    game.police.spawnTank(p.x, p.z, { x: p.x - 5, z: p.z + 38 });
     game.police.placeRoadblock(p.x, p.z, p.heading);
     game.missions.setMission(2);
     game.missions.stageIndex = 1; // SURVIVE
     game.hud.ticker('DISPATCH', 'D', 'All units, five-star fugitive on Avenida del Sol. Tank unit Bravo-6 is rolling in.', 30);
   }
+  // Keep the chase framing clean: a traffic car that happens to sit right
+  // under or just behind the camera fills the bottom of the frame with its
+  // roof. Move any car within 16 m of the player to a random street point.
+  for (const c of game.traffic.cars) {
+    if (Math.hypot(c.x - p.x, c.z - p.z) < 16) {
+      const np = game.traffic.randomStreetPoint();
+      c.x = np.x; c.z = np.z; c.axis = np.axis; c.dir = np.dir;
+      c.mesh.position.set(c.x, 0, c.z);
+      c.mesh.rotation.y = c.axis === 'z' ? (c.dir > 0 ? Math.PI : 0) : (c.dir > 0 ? -Math.PI / 2 : Math.PI / 2);
+    }
+  }
   game.updateCamera(0.1);
+  // Snap the chase camera straight to its framing: at headless frame rates
+  // the camera lerp would still be descending from the menu orbit when the
+  // screenshot is taken, pushing the helicopter out of the top of the frame.
+  {
+    const p = game.player;
+    const fx = p.inCar ? -Math.sin(p.heading) : -Math.sin(p.camYaw);
+    const fz = p.inCar ? -Math.cos(p.heading) : -Math.cos(p.camYaw);
+    const dist = p.inCar ? game.camDist : 8;
+    const height = p.inCar ? game.camHeight : 3.4;
+    game.camera.position.set(p.x - fx * dist, height, p.z - fz * dist);
+    game.camera.lookAt(p.x + fx * 12, 1.4, p.z + fz * 12);
+  }
 }
 
 const game = new Game();

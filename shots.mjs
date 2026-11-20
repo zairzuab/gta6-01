@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const entry = '/home/hatch/workspace/makefun/gta6-01-entry';
+const entry = '/home/hatch/workspace/makefun/gta6-01-entry-v2';
 const gameDir = join(entry, 'game');
 const shotsDir = join(entry, 'screenshots');
 if (!existsSync(shotsDir)) mkdirSync(shotsDir, { recursive: true });

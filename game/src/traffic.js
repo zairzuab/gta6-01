@@ -13,7 +13,28 @@ export class Traffic {
     this.cars = []; // {mesh, x, z, heading, speed, lane, axis, dir, targetSpeed}
     this.peds = []; // {mesh, x, z, heading, speed, walkPhase, sidewalk}
     this.spawnCars(14);
-    this.spawnPeds(18);
+    this.spawnPeds(26);
+    this.spawnAvenuePeds(12);
+  }
+
+  // Pedestrians strolling the sidewalks of Avenida del Sol itself, so the
+  // main avenue feels busy in chase shots.
+  spawnAvenuePeds(n) {
+    for (let i = 0; i < n; i++) {
+      const side = Math.random() < 0.5 ? -1 : 1;
+      const x = 30 + side * (STREET_W / 2 + 2 + Math.random() * 3);
+      const z = -CITY_HALF + 20 + Math.random() * (2 * CITY_HALF - 40);
+      const mesh = makePerson(SHIRTS[(i + 3) % SHIRTS.length]);
+      mesh.position.set(x, 0, z);
+      const heading = Math.random() < 0.5 ? 0 : Math.PI; // walk along the avenue
+      mesh.rotation.y = heading;
+      this.scene.add(mesh);
+      this.peds.push({
+        mesh, x, z, heading,
+        speed: 1.1 + Math.random() * 0.7, walkPhase: Math.random() * 6,
+        panic: 0,
+      });
+    }
   }
 
   randomStreetPoint() {

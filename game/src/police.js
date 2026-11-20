@@ -70,11 +70,20 @@ export class Police {
   spawnHelicopter(px, pz) {
     if (this.heli) return;
     const mesh = makeHelicopter();
+    // Scaled up 1.35x and on a low, close orbit (r 36, height 17) so the
+    // helicopter dominates the top of the frame like in the reference.
+    mesh.scale.setScalar(1.35);
     // Start ahead of the player (in the chase camera's view), on a wide
     // low orbit that keeps the helicopter inside the frame.
-    mesh.position.set(px, 22, pz + 48);
+    mesh.position.set(px, 17, pz + 36);
     this.scene.add(mesh);
-    this.heli = { mesh, angle: Math.PI / 2, height: 22 };
+    // Searchlight pool on the street under the helicopter.
+    const pool = new THREE.Mesh(new THREE.CircleGeometry(7, 24),
+      new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false }));
+    pool.rotation.x = -Math.PI / 2;
+    pool.position.set(px, 0.06, pz + 40);
+    this.scene.add(pool);
+    this.heli = { mesh, angle: Math.PI / 2, height: 17, pool };
   }
 
   spawnTank(px, pz, at = null) {
@@ -89,6 +98,7 @@ export class Police {
   removeHelicopter() {
     if (!this.heli) return;
     this.scene.remove(this.heli.mesh);
+    if (this.heli.pool) this.scene.remove(this.heli.pool);
     this.heli = null;
   }
 
@@ -246,12 +256,12 @@ export class Police {
     }
 
     // --- Helicopter: circle above the player, spotlight -----------------
-    // Wide low orbit (r 48, height 22): the helicopter stays inside the
-    // chase camera's frame instead of flying above it.
+    // Low close orbit (r 36, height 17): the helicopter stays inside the
+    // chase camera's frame and dominates the top of it.
     if (this.heli) {
       const h = this.heli;
       h.angle += dt * 0.35;
-      const r = 48;
+      const r = 36;
       h.mesh.position.set(
         px + Math.cos(h.angle) * r,
         h.height + Math.sin(h.angle * 0.7) * 3,
@@ -262,6 +272,8 @@ export class Police {
       // Red anti-collision beacon flashes.
       const bc = h.mesh.userData.beacon;
       if (bc) bc.material.emissiveIntensity = (Math.floor(this.lightPhase * 3) % 2 === 0) ? 3 : 0.25;
+      // Searchlight pool follows the helicopter on the street.
+      if (h.pool) h.pool.position.set(h.mesh.position.x, 0.06, h.mesh.position.z);
     }
 
     // --- Tank: slow, heavy, rams ----------------------------------------
@@ -304,7 +316,7 @@ export class Police {
         cls: c.state === 'pit' ? 'pit' : (c.dist < 12 ? 'box' : 'pursuit'),
       });
     }
-    if (this.heli) list.push({ call: 'HALCON-1', kind: 'AIR', dist: 48, status: 'OVERHEAD', cls: 'air' });
+    if (this.heli) list.push({ call: 'HALCON-1', kind: 'AIR', dist: 36, status: 'OVERHEAD', cls: 'air' });
     if (this.tank) list.push({ call: 'BRAVO-6', kind: 'TANK', dist: Math.round(this.tank.dist || 0), status: 'PURSUIT', cls: 'pursuit' });
     return list.slice(0, 5);
   }

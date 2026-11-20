@@ -1,514 +1,761 @@
-// Vehicles: every car, the police helicopter and the tank are built from
-// boxes, cylinders and emissive lights — no imported models, all original.
-// Police units carry real markings: canvas-texture "POLICE" / "SOLMAR PD"
-// decals, a flashing light bar, push bars and hubcaps, so they read as
-// police at a glance. The helicopter is a detailed police air unit with a
-// spinning rotor + blur disc, tail rotor, skids and an aimed searchlight.
+// vehicles.js — procedural vehicle / pedestrian / pickup meshes for the
+// Solmar GTA-style game. Everything is built from primitives + canvas
+// textures; no network requests, no external assets.
+//
+// Conventions: every vehicle faces local -z (front = -z, rear = +z).
+// Wheels spin around their local X axle, rotors around Y (tail rotor X).
 import * as THREE from 'three';
 
-const CAR_NAMES = [
-  { name: 'CORSA BRISA GT', body: 0xd8352a, fast: true },
-  { name: 'VELOZ COMET', body: 0x2a6fd8, fast: true },
-  { name: 'PRADO SEDAN', body: 0xd8d8d8, fast: false },
-  { name: 'BISON PICKUP', body: 0x3a7a3a, fast: false },
-  { name: 'SOL TAXI', body: 0xf2c200, fast: false },
-  { name: 'ORCA VAN', body: 0x8a6fd8, fast: false },
-  { name: 'FUEGO COUPE', body: 0xff7a1a, fast: true },
-  { name: 'MARLIN HATCH', body: 0x1ad8c8, fast: false },
-];
+// ---------------------------------------------------------------------------
+// Shared geometry / material caches (keeps ~60 vehicles + ~38 peds cheap).
+// ---------------------------------------------------------------------------
+const _geo = new Map();
+function boxGeo(w, h, d) {
+  const k = `b${w}|${h}|${d}`;
+  let g = _geo.get(k);
+  if (!g) { g = new THREE.BoxGeometry(w, h, d); _geo.set(k, g); }
+  return g;
+}
+function cylGeo(rt, rb, h, seg = 14) {
+  const k = `c${rt}|${rb}|${h}|${seg}`;
+  let g = _geo.get(k);
+  if (!g) { g = new THREE.CylinderGeometry(rt, rb, h, seg); _geo.set(k, g); }
+  return g;
+}
+function sphGeo(r, w = 16, h = 12) {
+  const k = `s${r}|${w}|${h}`;
+  let g = _geo.get(k);
+  if (!g) { g = new THREE.SphereGeometry(r, w, h); _geo.set(k, g); }
+  return g;
+}
 
-function box(w, h, d, color, emissive = 0x000000, ei = 0) {
-  const m = new THREE.Mesh(
-    new THREE.BoxGeometry(w, h, d),
-    new THREE.MeshLambertMaterial({ color, emissive, emissiveIntensity: ei }));
-  m.castShadow = true;
+const _mat = new Map();
+function paintMat(color) {
+  const k = `p${color}`;
+  let m = _mat.get(k);
+  if (!m) {
+    m = new THREE.MeshPhongMaterial({ color, shininess: 110, specular: 0x999999 });
+    _mat.set(k, m);
+  }
+  return m;
+}
+function flatMat(color) {
+  const k = `f${color}`;
+  let m = _mat.get(k);
+  if (!m) { m = new THREE.MeshPhongMaterial({ color, shininess: 25, specular: 0x222222 }); _mat.set(k, m); }
+  return m;
+}
+function glowMat(color, intensity = 1.6) {
+  const k = `g${color}|${intensity}`;
+  let m = _mat.get(k);
+  if (!m) {
+    m = new THREE.MeshPhongMaterial({ color, emissive: color, emissiveIntensity: intensity, shininess: 40 });
+    _mat.set(k, m);
+  }
   return m;
 }
 
-// --- Canvas text decals -------------------------------------------------
-// A readable "POLICE" / "SOLMAR PD" marking drawn on a canvas and applied
-// to a plane. MeshBasicMaterial keeps the text legible in any light.
-function makeTextTexture(text, opts = {}) {
-  const {
-    w = 512, h = 128, font = 'bold 84px Arial, sans-serif',
-    fg = '#ffffff', bg = null, letterSpacing = 6,
-  } = opts;
+const MAT = {
+  glass: new THREE.MeshPhongMaterial({ color: 0x101d28, shininess: 160, specular: 0xffffff }),
+  chrome: new THREE.MeshPhongMaterial({ color: 0xdfe4ea, shininess: 180, specular: 0xffffff }),
+  black: flatMat(0x14161a),
+  darkTrim: flatMat(0x23262b),
+  tyre: new THREE.MeshPhongMaterial({ color: 0x0c0d0f, shininess: 8, specular: 0x111111 }),
+  hub: new THREE.MeshPhongMaterial({ color: 0xcfd4da, shininess: 120, specular: 0xffffff }),
+  headlight: new THREE.MeshBasicMaterial({ color: 0xfff6c8 }),
+  fog: new THREE.MeshBasicMaterial({ color: 0xffe9a8 }),
+  taillight: glowMat(0xff1a1a, 1.8),
+  tailStrip: glowMat(0xcc0a0a, 1.4),
+  white: paintMat(0xf4f4f4),
+  navy: paintMat(0x14264d),
+  olive: flatMat(0x5a6136),
+  oliveDark: flatMat(0x424a28),
+  track: flatMat(0x1c1e20),
+};
+
+// Small helper: mesh from cached box geometry, positioned in one call.
+function bx(parent, mat, w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) {
+  const m = new THREE.Mesh(boxGeo(w, h, d), mat);
+  m.position.set(x, y, z);
+  if (rx) m.rotation.x = rx;
+  if (ry) m.rotation.y = ry;
+  if (rz) m.rotation.z = rz;
+  parent.add(m);
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// Canvas-texture decals. Transparent background, MeshBasicMaterial so the
+// lettering stays readable in any light.
+// ---------------------------------------------------------------------------
+function textPlane(text, w, h, { font = 'bold 96px Arial, sans-serif', fg = '#ffffff',
+  bg = null, stroke = null, letter = 0 } = {}) {
+  const cw = 512;
+  const ch = Math.max(64, Math.round((512 * h) / w));
   const c = document.createElement('canvas');
-  c.width = w; c.height = h;
+  c.width = cw; c.height = ch;
   const ctx = c.getContext('2d');
-  if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h); }
+  if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, cw, ch); }
   ctx.font = font;
-  ctx.fillStyle = fg;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  // Manual letter-spacing for a stencil look.
-  if (letterSpacing > 0) {
-    const chars = [...text];
-    const widths = chars.map((ch) => ctx.measureText(ch).width);
-    const total = widths.reduce((a, b) => a + b, 0) + letterSpacing * (chars.length - 1);
-    let x = (w - total) / 2;
-    for (let i = 0; i < chars.length; i++) {
-      ctx.fillText(chars[i], x + widths[i] / 2, h / 2 + 4);
-      x += widths[i] + letterSpacing;
-    }
-  } else {
-    ctx.fillText(text, w / 2, h / 2 + 4);
+  // Shrink to fit the canvas width.
+  let size = parseInt(font.match(/(\d+)px/)?.[1] || '96', 10);
+  const maxW = cw - 16;
+  while (ctx.measureText(text).width > maxW && size > 18) {
+    size -= 4;
+    ctx.font = font.replace(/(\d+)px/, `${size}px`);
   }
+  if (letter) ctx.letterSpacing = `${letter}px`;
+  if (stroke) { ctx.lineWidth = 8; ctx.strokeStyle = stroke; ctx.strokeText(text, cw / 2, ch / 2 + 2); }
+  ctx.fillStyle = fg;
+  ctx.fillText(text, cw / 2, ch / 2 + 2);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
-  return tex;
-}
-
-// A flat decal plane carrying `text`. `opts` pass through to the texture.
-function textPlane(text, w, h, opts = {}) {
-  const tex = makeTextTexture(text, opts);
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
-    new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }));
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }),
+  );
+  m.renderOrder = 3;
   return m;
 }
 
-// A decal that lies flat on a horizontal surface (hood / roof) with its
-// text top pointing toward +z (the rear), so it reads correctly from the
-// front of the vehicle — the direction a screenshot camera sees.
-function flatText(text, w, h, opts = {}) {
-  const g = new THREE.Group();
-  const p = textPlane(text, w, h, opts);
-  p.rotation.x = -Math.PI / 2;
-  g.add(p);
-  g.rotation.y = Math.PI;
-  return g;
+function plateTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 72;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#f8f8f2'; ctx.fillRect(0, 0, 256, 72);
+  ctx.strokeStyle = '#14304d'; ctx.lineWidth = 6; ctx.strokeRect(3, 3, 250, 66);
+  ctx.fillStyle = '#14304d'; ctx.textAlign = 'center';
+  ctx.font = 'bold 20px Arial'; ctx.fillText('SOLMAR', 128, 22);
+  ctx.font = 'bold 30px Arial'; ctx.fillText('7GTA-21', 128, 56);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
+const PLATE_TEX = plateTexture();
 
-// A wheel: black tyre + light hubcap, in a group so the caller can spin it
-// around its axle (rotation.x) exactly as before.
-function wheelMesh() {
+function starTexture() {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 128;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#f2f2ea';
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 === 0 ? 58 : 24;
+    const a = -Math.PI / 2 + (i * Math.PI) / 5;
+    const x = 64 + Math.cos(a) * r, y = 64 + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath(); ctx.fill();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const STAR_TEX = starTexture();
+
+// ---------------------------------------------------------------------------
+// Wheels — a group whose origin is the axle, so callers spin rotation.x.
+// ---------------------------------------------------------------------------
+function makeWheel(r = 0.36, w = 0.28) {
   const g = new THREE.Group();
-  const tyre = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.38, 0.38, 0.32, 14),
-    new THREE.MeshLambertMaterial({ color: 0x141414 }));
-  tyre.rotation.z = Math.PI / 2;
-  tyre.castShadow = true;
+  const tyre = new THREE.Mesh(cylGeo(r, r, w, 20), MAT.tyre);
+  tyre.rotation.z = Math.PI / 2; // cylinder axis Y -> X (axle)
   g.add(tyre);
-  const hub = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.22, 0.22, 0.34, 12),
-    new THREE.MeshLambertMaterial({ color: 0xb8bcc2 }));
+  const hub = new THREE.Mesh(cylGeo(r * 0.58, r * 0.58, w + 0.03, 14), MAT.hub);
   hub.rotation.z = Math.PI / 2;
   g.add(hub);
-  const cap = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.09, 0.09, 0.36, 8),
-    new THREE.MeshLambertMaterial({ color: 0x333333 }));
-  cap.rotation.z = Math.PI / 2;
-  g.add(cap);
+  for (const s of [-1, 1]) {
+    const cap = new THREE.Mesh(cylGeo(r * 0.2, r * 0.2, 0.03, 10), MAT.black);
+    cap.rotation.z = Math.PI / 2;
+    cap.position.x = s * (w / 2 + 0.01);
+    g.add(cap);
+  }
+  // 5 spokes suggested by thin dark boxes on both faces.
+  for (const s of [-1, 1]) {
+    for (let i = 0; i < 5; i++) {
+      const sp = new THREE.Mesh(boxGeo(0.02, r * 0.5, 0.09), MAT.darkTrim);
+      const a = (i / 5) * Math.PI * 2;
+      sp.position.set(s * (w / 2 + 0.005), Math.cos(a) * r * 0.28, Math.sin(a) * r * 0.28);
+      sp.rotation.x = a;
+      g.add(sp);
+    }
+  }
   return g;
 }
 
-// A car: body with a sloped hood and trunk, a painted cabin with dark
-// glass, grille, bumpers, mirrors, headlights and taillights. `opts` picks
-// colours and whether it is a police cruiser (black-and-white livery,
-// push bar, big flashing light bar, POLICE decals).
-export function makeCar(kind = 'traffic', seed = 0) {
+// ---------------------------------------------------------------------------
+// Cars. Front is local -z. Each model style gets its own silhouette:
+// sports = low + long hood + spoiler, sedan = classic 3-box, coupe = short
+// low cabin, hatch = short tail, pickup = cab + open bed, van = tall box.
+// ---------------------------------------------------------------------------
+const MODELS = [
+  { name: 'CORSA BRISA GT', color: 0xd21f2b, top: 34, style: 'sports', len: 4.6, wid: 1.95 },
+  { name: 'VELOZ COMET', color: 0x1f5fd2, top: 34, style: 'sports', len: 4.5, wid: 1.9 },
+  { name: 'PRADO SEDAN', color: 0xc8ccd2, top: 24, style: 'sedan', len: 4.7, wid: 1.95 },
+  { name: 'BISON PICKUP', color: 0x2e7d32, top: 24, style: 'pickup', len: 5.0, wid: 2.0 },
+  { name: 'SOL TAXI', color: 0xf5c518, top: 26, style: 'sedan', len: 4.7, wid: 1.95, taxi: true },
+  { name: 'ORCA VAN', color: 0x7b2fbe, top: 24, style: 'van', len: 4.9, wid: 2.05 },
+  { name: 'FUEGO COUPE', color: 0xf26a1b, top: 34, style: 'coupe', len: 4.4, wid: 1.9 },
+  { name: 'MARLIN HATCH', color: 0x0f9d8f, top: 24, style: 'hatch', len: 4.1, wid: 1.85 },
+];
+
+function addPlate(g, len, wid, y) {
+  const mat = new THREE.MeshBasicMaterial({ map: PLATE_TEX });
+  const rear = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.17), mat);
+  rear.position.set(0, y, len / 2 + 0.145);
+  rear.rotation.y = Math.PI;
+  g.add(rear);
+  const front = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.17), mat);
+  front.position.set(0, y, -len / 2 - 0.145);
+  g.add(front);
+}
+
+function addTextDecal(g, text, w, h, x, y, z, ry, opts = {}) {
+  const p = textPlane(text, w, h, opts);
+  p.position.set(x, y, z);
+  p.rotation.y = ry;
+  g.add(p);
+  return p;
+}
+
+function buildCar(spec) {
   const g = new THREE.Group();
-  let bodyColor = 0xcccccc;
-  let name = 'PRADO SEDAN';
-  let topSpeed = 26;
-  if (kind === 'player') {
-    const pick = CAR_NAMES[0];
-    bodyColor = pick.body; name = pick.name; topSpeed = 42;
-  } else if (kind === 'police') {
-    bodyColor = 0xf2f2f2; name = 'LIMA CRUISER'; topSpeed = 40;
-  } else if (kind === 'taxi') {
-    bodyColor = 0xf2c200; name = 'SOL TAXI'; topSpeed = 26;
+  const paint = paintMat(spec.color);
+  const { len, wid } = spec;
+  const style = spec.style;
+  const wheelR = style === 'van' ? 0.4 : style === 'sports' ? 0.34 : 0.37;
+  const wheelW = 0.3;
+
+  // --- Lower body ---------------------------------------------------------
+  const bodyH = style === 'van' ? 1.18 : style === 'sports' ? 0.5 : style === 'pickup' ? 0.58 : 0.6;
+  const bodyY = style === 'van' ? 1.02 : wheelR + bodyH / 2 + 0.16;
+  const bodyTop = bodyY + bodyH / 2;
+  bx(g, paint, wid, bodyH, len, 0, bodyY, 0);
+
+  // Sloped hood (front dips down) and sloped trunk deck (rear dips down).
+  const hoodLen = style === 'sports' ? 1.25 : 1.0;
+  const hood = bx(g, paint, wid * 0.96, 0.14, hoodLen, 0, bodyTop - 0.06, -len / 2 + hoodLen / 2 - 0.05, -0.16);
+  hood.position.y = bodyTop - 0.1;
+  const trunkLen = style === 'hatch' ? 0.45 : style === 'pickup' ? 0 : 0.9;
+  if (trunkLen > 0) {
+    bx(g, paint, wid * 0.96, 0.14, trunkLen, 0, bodyTop - 0.08, len / 2 - trunkLen / 2 + 0.05, 0.14);
+  }
+
+  // --- Cabin / glasshouse -------------------------------------------------
+  let cabinLen, cabinH, cabinZ, cabinY;
+  if (style === 'van') {
+    // Tall box: windshield is a sloped glass plane at the front, long side
+    // windows, painted roof.
+    const shield = bx(g, MAT.glass, wid * 0.86, 0.78, 0.08, 0, bodyTop + 0.28, -len / 2 + 0.42, 0.32);
+    shield.position.y = bodyTop + 0.3;
+    bx(g, paint, wid * 0.98, 0.1, len * 0.94, 0, bodyTop + 0.62, 0);
+    for (const s of [-1, 1]) {
+      bx(g, MAT.glass, 0.04, 0.5, len * 0.52, s * (wid / 2 + 0.005), bodyTop + 0.3, 0.3);
+      bx(g, MAT.glass, 0.04, 0.5, 0.7, s * (wid / 2 + 0.005), bodyTop + 0.3, -len / 2 + 0.75);
+    }
+    bx(g, MAT.glass, wid * 0.8, 0.55, 0.06, 0, bodyTop + 0.3, len / 2 - 0.02);
+    cabinLen = 0; cabinH = 0; cabinZ = 0; cabinY = bodyTop;
+  } else if (style === 'pickup') {
+    // Cab up front, open bed behind it.
+    cabinLen = 1.7; cabinH = 0.62; cabinZ = -len / 2 + 1.55; cabinY = bodyTop;
+    bx(g, MAT.glass, wid * 0.8, cabinH, cabinLen, 0, cabinY + cabinH / 2 - 0.04, cabinZ);
+    bx(g, paint, wid * 0.84, 0.09, cabinLen * 0.98, 0, cabinY + cabinH - 0.02, cabinZ);
+    // Sloped windshield + rear cab glass.
+    bx(g, MAT.glass, wid * 0.78, 0.5, 0.06, 0, cabinY + 0.32, cabinZ - cabinLen / 2 - 0.08, 0.38);
+    bx(g, MAT.glass, wid * 0.78, 0.42, 0.06, 0, cabinY + 0.3, cabinZ + cabinLen / 2 + 0.06, -0.22);
+    // Open bed: floor + side walls + tailgate, dark bed liner.
+    const bedZ0 = cabinZ + cabinLen / 2 + 0.1, bedZ1 = len / 2 - 0.08;
+    const bedLen = bedZ1 - bedZ0, bedZ = (bedZ0 + bedZ1) / 2;
+    bx(g, MAT.darkTrim, wid * 0.92, 0.08, bedLen, 0, bodyTop - 0.1, bedZ);
+    for (const s of [-1, 1]) bx(g, paint, 0.09, 0.42, bedLen, s * (wid / 2 - 0.05), bodyTop + 0.1, bedZ);
+    bx(g, paint, wid * 0.94, 0.42, 0.09, 0, bodyTop + 0.1, bedZ1);
+    // Bed rails + a spare tyre lying in the bed.
+    for (const s of [-1, 1]) bx(g, MAT.chrome, 0.05, 0.05, bedLen, s * (wid / 2 - 0.05), bodyTop + 0.33, bedZ);
+    const spare = new THREE.Mesh(cylGeo(0.34, 0.34, 0.2, 16), MAT.tyre);
+    spare.rotation.x = Math.PI / 2;
+    spare.position.set(0.4, bodyTop + 0.12, bedZ + 0.3);
+    g.add(spare);
   } else {
-    const pick = CAR_NAMES[seed % CAR_NAMES.length];
-    bodyColor = pick.body; name = pick.name; topSpeed = pick.fast ? 34 : 24;
-  }
-  const isPolice = kind === 'police';
-  const paint = isPolice ? 0xf2f2f2 : bodyColor;
-
-  // --- Lower body + sloped hood + trunk ---------------------------------
-  const body = box(2.0, 0.55, 4.4, paint);
-  body.position.y = 0.62;
-  g.add(body);
-  const hood = box(1.9, 0.3, 1.35, isPolice ? 0x161616 : paint);
-  hood.position.set(0, 0.86, -1.5);
-  hood.rotation.x = -0.08;
-  g.add(hood);
-  const trunk = box(1.9, 0.32, 1.05, isPolice ? 0x161616 : paint);
-  trunk.position.set(0, 0.86, 1.65);
-  trunk.rotation.x = 0.08;
-  g.add(trunk);
-  // Police black door band (white body, black middle) — the classic livery.
-  if (isPolice) {
-    const band = box(2.02, 0.34, 2.3, 0x161616);
-    band.position.set(0, 0.68, 0.25);
-    g.add(band);
+    // Sedan / sports / coupe / hatch: painted cabin with dark glass.
+    cabinLen = style === 'sports' ? 2.3 : style === 'coupe' ? 2.0 : style === 'hatch' ? 2.2 : 2.4;
+    cabinH = style === 'sports' ? 0.5 : style === 'coupe' ? 0.52 : 0.62;
+    cabinZ = style === 'hatch' ? 0.25 : style === 'sports' ? 0.15 : 0.05;
+    cabinY = bodyTop;
+    bx(g, MAT.glass, wid * 0.8, cabinH, cabinLen, 0, cabinY + cabinH / 2 - 0.04, cabinZ);
+    bx(g, paint, wid * 0.84, 0.09, cabinLen * 0.96, 0, cabinY + cabinH - 0.02, cabinZ);
+    // Sloped windshield and rear window.
+    bx(g, MAT.glass, wid * 0.78, 0.46, 0.06, 0, cabinY + 0.3, cabinZ - cabinLen / 2 - 0.1, 0.42);
+    bx(g, MAT.glass, wid * 0.78, 0.4, 0.06, 0, cabinY + 0.28, cabinZ + cabinLen / 2 + 0.08, -0.38);
+    // Painted A-pillars framing the windshield.
+    for (const s of [-1, 1]) {
+      bx(g, paint, 0.09, 0.5, 0.09, s * (wid * 0.4), cabinY + 0.3, cabinZ - cabinLen / 2 - 0.06, 0.42);
+    }
+    // Side glass split into front / rear windows with a B-pillar.
+    for (const s of [-1, 1]) {
+      bx(g, paint, 0.05, cabinH * 0.9, 0.08, s * (wid * 0.4 + 0.01), cabinY + cabinH / 2, cabinZ);
+    }
   }
 
-  // --- Cabin: painted shell + dark glass --------------------------------
-  const cabin = box(1.62, 0.5, 2.0, paint);
-  cabin.position.set(0, 1.13, 0.15);
-  g.add(cabin);
-  const glassMat = new THREE.MeshLambertMaterial({ color: 0x14202e, emissive: 0x0a141e, emissiveIntensity: 0.4 });
-  const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.42, 0.06), glassMat);
-  windshield.position.set(0, 1.15, -0.8);
-  windshield.rotation.x = -0.32;
-  g.add(windshield);
-  const rearGlass = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.36, 0.06), glassMat);
-  rearGlass.position.set(0, 1.15, 1.08);
-  rearGlass.rotation.x = 0.28;
-  g.add(rearGlass);
+  // --- Front face: grille, headlights, fog lights, bumper ----------------
+  const noseZ = -len / 2;
+  bx(g, MAT.chrome, wid * 0.52, 0.16, 0.06, 0, bodyY + 0.08, noseZ - 0.02);
+  for (let i = 0; i < 3; i++) {
+    bx(g, MAT.darkTrim, wid * 0.46, 0.025, 0.03, 0, bodyY + 0.03 + i * 0.05, noseZ - 0.05);
+  }
   for (const s of [-1, 1]) {
-    const sideGlass = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.32, 1.7), glassMat);
-    sideGlass.position.set(s * 0.82, 1.15, 0.15);
-    g.add(sideGlass);
-    // Side mirrors.
-    const mirror = box(0.14, 0.1, 0.22, 0x1a1a1a);
-    mirror.position.set(s * 0.92, 1.22, -0.55);
-    g.add(mirror);
-  }
-
-  // --- Grille, bumpers ---------------------------------------------------
-  const grille = box(1.3, 0.28, 0.1, 0x1a1a1a);
-  grille.position.set(0, 0.6, -2.22);
-  g.add(grille);
-  for (const gy of [0.54, 0.68]) {
-    const slat = box(1.2, 0.05, 0.04, 0xcfd4d8, 0x222222, 0.4);
-    slat.position.set(0, gy, -2.28);
-    g.add(slat);
-  }
-  const bumperF = box(2.04, 0.24, 0.28, 0x2a2a2a);
-  bumperF.position.set(0, 0.38, -2.28);
-  g.add(bumperF);
-  const bumperR = box(2.04, 0.24, 0.28, 0x2a2a2a);
-  bumperR.position.set(0, 0.38, 2.28);
-  g.add(bumperR);
-
-  // --- Wheels ------------------------------------------------------------
-  const wheels = [];
-  for (const [wx, wz] of [[-0.95, -1.45], [0.95, -1.45], [-0.95, 1.45], [0.95, 1.45]]) {
-    const w = wheelMesh();
-    w.position.set(wx, 0.38, wz);
-    g.add(w);
-    wheels.push(w);
-  }
-
-  // --- Headlights, fog lights, taillights --------------------------------
-  const hl = new THREE.MeshLambertMaterial({ color: 0xfff6c9, emissive: 0xfff2a0, emissiveIntensity: 1.4 });
-  const tl = new THREE.MeshLambertMaterial({ color: 0xaa0000, emissive: 0xff2222, emissiveIntensity: 1.0 });
-  for (const s of [-1, 1]) {
-    const h = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.18, 0.08), hl);
-    h.position.set(s * 0.62, 0.68, -2.21);
-    g.add(h);
-    const fog = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.06, 10), hl);
+    bx(g, MAT.headlight, 0.44, 0.15, 0.07, s * (wid * 0.32), bodyY + 0.14, noseZ - 0.03);
+    const fog = new THREE.Mesh(cylGeo(0.09, 0.09, 0.05, 12), MAT.fog);
     fog.rotation.x = Math.PI / 2;
-    fog.position.set(s * 0.55, 0.42, -2.26);
+    fog.position.set(s * (wid * 0.3), bodyY - 0.14, noseZ - 0.04);
     g.add(fog);
-    const t = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.18, 0.08), tl);
-    t.position.set(s * 0.62, 0.68, 2.21);
-    g.add(t);
   }
-  // Rear light strip across the trunk.
-  const strip = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.1, 0.06), tl);
-  strip.position.set(0, 0.95, 2.18);
-  g.add(strip);
+  bx(g, MAT.darkTrim, wid + 0.08, 0.2, 0.28, 0, wheelR + 0.02, noseZ - 0.06);
 
-  // --- Police equipment --------------------------------------------------
-  let lightBar = null;
-  if (isPolice) {
-    // Push bar: two uprights + a crossbar + a centre plate on the nose.
-    const barMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
-    for (const s of [-1, 1]) {
-      const upright = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.72, 8), barMat);
-      upright.position.set(s * 0.55, 0.62, -2.42);
-      g.add(upright);
-    }
-    const cross = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.24, 8), barMat);
-    cross.rotation.z = Math.PI / 2;
-    cross.position.set(0, 0.88, -2.42);
-    g.add(cross);
-    const plate = box(0.34, 0.3, 0.08, 0x1a1a1a);
-    plate.position.set(0, 0.62, -2.44);
-    g.add(plate);
-
-    // Light bar: dark base + big red/blue domes + a centre clear dome.
-    lightBar = new THREE.Group();
-    const base = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.1, 0.55),
-      new THREE.MeshLambertMaterial({ color: 0x181818 }));
-    base.position.y = -0.06;
-    lightBar.add(base);
-    const red = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.24, 0.46),
-      new THREE.MeshLambertMaterial({ color: 0xcc0000, emissive: 0xff0000, emissiveIntensity: 2 }));
-    red.position.x = -0.36;
-    const blue = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.24, 0.46),
-      new THREE.MeshLambertMaterial({ color: 0x0022cc, emissive: 0x2244ff, emissiveIntensity: 2 }));
-    blue.position.x = 0.36;
-    const clear = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.16, 0.4),
-      new THREE.MeshLambertMaterial({ color: 0xdddddd, emissive: 0xffffff, emissiveIntensity: 0.5 }));
-    lightBar.add(red); lightBar.add(blue); lightBar.add(clear);
-    lightBar.position.set(0, 1.5, 0.2);
-    lightBar.userData = { red, blue };
-    g.add(lightBar);
-
-    // "POLICE" on both doors (white on the black band).
-    for (const s of [-1, 1]) {
-      const decal = textPlane('POLICE', 1.9, 0.42, { fg: '#ffffff', font: 'bold 88px Arial, sans-serif' });
-      decal.position.set(s * 1.03, 0.68, 0.25);
-      decal.rotation.y = s * Math.PI / 2;
-      g.add(decal);
-    }
-    // "POLICE" on the hood, readable from the front.
-    const hoodText = flatText('POLICE', 1.7, 0.5, { fg: '#ffffff', font: 'bold 88px Arial, sans-serif' });
-    hoodText.position.set(0, 1.03, -1.5);
-    g.add(hoodText);
-    // "POLICE" on the rear, readable from behind.
-    const rearText = textPlane('POLICE', 1.7, 0.42, { fg: '#ffffff', font: 'bold 88px Arial, sans-serif' });
-    rearText.position.set(0, 0.9, 2.19);
-    rearText.rotation.y = Math.PI;
-    g.add(rearText);
-    // "SOLMAR PD" small on the front fenders.
-    for (const s of [-1, 1]) {
-      const fender = textPlane('SOLMAR PD', 1.1, 0.24, { fg: '#ffffff', font: 'bold 52px Arial, sans-serif' });
-      fender.position.set(s * 1.03, 0.62, -1.35);
-      fender.rotation.y = s * Math.PI / 2;
-      g.add(fender);
-    }
-  }
-
-  // Headlight beams (cheap fake: two translucent cones).
-  const beamMat = new THREE.MeshBasicMaterial({ color: 0xfff6c9, transparent: true, opacity: 0.10, side: THREE.DoubleSide });
+  // --- Rear face: taillights, light strip, bumper, exhausts, plate -------
+  const tailZ = len / 2;
   for (const s of [-1, 1]) {
-    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.9, 7, 8, 1, true), beamMat);
-    cone.rotation.x = -Math.PI / 2 - 0.12;
-    cone.position.set(s * 0.6, 0.55, -5.4);
-    g.add(cone);
+    bx(g, MAT.taillight, 0.42, 0.14, 0.07, s * (wid * 0.32), bodyY + 0.14, tailZ + 0.03);
   }
-  g.userData = { kind, name, topSpeed, wheels, lightBar, bodyColor };
+  bx(g, MAT.tailStrip, wid * 0.7, 0.06, 0.04, 0, bodyY + 0.02, tailZ + 0.04);
+  bx(g, MAT.darkTrim, wid + 0.08, 0.2, 0.28, 0, wheelR + 0.02, tailZ + 0.06);
+  for (const s of [-1, 1]) {
+    const ex = new THREE.Mesh(cylGeo(0.07, 0.07, 0.3, 10), MAT.chrome);
+    ex.rotation.x = Math.PI / 2;
+    ex.position.set(s * 0.55, wheelR - 0.02, tailZ + 0.12);
+    g.add(ex);
+  }
+  addPlate(g, len, wid, bodyY + 0.02);
+
+  // --- Sides: mirrors, skirts -------------------------------------------
+  for (const s of [-1, 1]) {
+    bx(g, paint, 0.06, 0.1, 0.16, s * (wid / 2 + 0.03), cabinY + 0.28,
+      style === 'van' ? -len / 2 + 0.55 : cabinZ - cabinLen / 2 + 0.25);
+    bx(g, MAT.black, 0.1, 0.14, 0.06, s * (wid / 2 + 0.09), cabinY + 0.3,
+      style === 'van' ? -len / 2 + 0.55 : cabinZ - cabinLen / 2 + 0.25);
+    bx(g, MAT.darkTrim, 0.06, 0.12, len * 0.82, s * (wid / 2 + 0.005), wheelR + 0.1, 0);
+  }
+
+  // --- Spoiler (sports / player) ----------------------------------------
+  // Black wing (not body paint): it must read as a separate part from the
+  // chase camera behind the car, or the rear is one flat red slab.
+  if (spec.spoiler) {
+    const sy = bodyTop + 0.3;
+    for (const s of [-1, 1]) bx(g, MAT.black, 0.08, 0.32, 0.3, s * 0.62, sy - 0.1, tailZ - 0.25);
+    bx(g, MAT.black, wid * 0.94, 0.1, 0.46, 0, sy + 0.06, tailZ - 0.25, -0.08);
+  }
+
+  // --- Sunroof (sports / coupe): a black glass panel breaking up the roof
+  if (style === 'sports' || style === 'coupe') {
+    bx(g, MAT.glass, wid * 0.6, 0.05, cabinLen * 0.5, 0, cabinY + cabinH + 0.02, cabinZ - 0.1);
+  }
+
+  // --- Wheels -------------------------------------------------------------
+  const wheels = [];
+  const wz = len * 0.32;
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const w = makeWheel(wheelR, wheelW);
+      w.position.set(sx * (wid / 2 - 0.06), wheelR, sz * wz);
+      g.add(w);
+      wheels.push(w);
+    }
+  }
+
+  return { group: g, wheels, bodyTop, cabinY };
+}
+
+export function makeCar(kind = 'traffic', seed = 0) {
+  let spec;
+  let police = false;
+  if (kind === 'player') {
+    spec = { name: 'CORSA BRISA GT', color: 0xd21f2b, top: 42, style: 'sports', len: 4.6, wid: 1.95, spoiler: true };
+  } else if (kind === 'police') {
+    police = true;
+    spec = { name: 'SOLMAR PD CRUISER', color: 0xf4f4f4, top: 40, style: 'sedan', len: 4.8, wid: 2.0 };
+  } else if (kind === 'taxi') {
+    spec = { ...MODELS[4] };
+  } else {
+    spec = { ...MODELS[((seed % 8) + 8) % 8] };
+  }
+
+  const { group: g, wheels, bodyTop, cabinY } = buildCar(spec);
+  const { len, wid } = spec;
+  let lightBar = null;
+
+  // --- Police livery ------------------------------------------------------
+  if (police) {
+    const noseZ = -len / 2, tailZ = len / 2;
+    // Black hood + trunk panels.
+    bx(g, MAT.black, wid * 0.94, 0.05, 1.05, 0, bodyTop + 0.02, noseZ + 0.6, -0.14);
+    bx(g, MAT.black, wid * 0.94, 0.05, 0.95, 0, bodyTop + 0.02, tailZ - 0.55, 0.12);
+    // Black door band on both sides.
+    for (const s of [-1, 1]) bx(g, MAT.black, 0.04, 0.52, 2.3, s * (wid / 2 + 0.012), bodyTop - 0.22, 0.1);
+    // Push bar on the nose: two uprights + two cross bars, chrome.
+    for (const s of [-1, 1]) bx(g, MAT.chrome, 0.09, 0.55, 0.09, s * 0.55, 0.55, noseZ - 0.2);
+    bx(g, MAT.chrome, 1.35, 0.09, 0.09, 0, 0.72, noseZ - 0.2);
+    bx(g, MAT.chrome, 1.35, 0.09, 0.09, 0, 0.42, noseZ - 0.2);
+    // Roof light bar: black base, red lens left, blue lens right.
+    const lb = new THREE.Group();
+    const lbY = cabinY + 0.7;
+    bx(lb, MAT.black, 1.15, 0.1, 0.4, 0, 0, 0);
+    const redMat = new THREE.MeshPhongMaterial({ color: 0xff2020, emissive: 0xff1010, emissiveIntensity: 0.2, shininess: 60 });
+    const blueMat = new THREE.MeshPhongMaterial({ color: 0x2040ff, emissive: 0x1020ff, emissiveIntensity: 0.2, shininess: 60 });
+    const red = new THREE.Mesh(boxGeo(0.5, 0.16, 0.36), redMat);
+    red.position.set(-0.3, 0.12, 0);
+    const blue = new THREE.Mesh(boxGeo(0.5, 0.16, 0.36), blueMat);
+    blue.position.set(0.3, 0.12, 0);
+    lb.add(red, blue);
+    lb.position.set(0, lbY, 0.05);
+    lb.userData = { red, blue };
+    g.add(lb);
+    lightBar = lb;
+    // Decals: POLICE on doors / hood / rear, SOLMAR PD on front fenders.
+    const navy = '#0a2a6b';
+    for (const s of [-1, 1]) {
+      // White POLICE lettering on the black door band.
+      addTextDecal(g, 'POLICE', 1.15, 0.34, s * (wid / 2 + 0.045), bodyTop - 0.22, 0.1, s * Math.PI / 2,
+        { font: 'bold 96px Arial', fg: '#ffffff' });
+      // Navy SOLMAR PD on the white front fender, ahead of the door band.
+      addTextDecal(g, 'SOLMAR PD', 0.85, 0.2, s * (wid / 2 + 0.035), bodyTop - 0.15, noseZ + 0.75, s * Math.PI / 2,
+        { font: 'bold 80px Arial', fg: navy });
+    }
+    const hoodDecal = textPlane('POLICE', 1.3, 0.34, { font: 'bold 96px Arial', fg: navy });
+    hoodDecal.rotation.x = -Math.PI / 2 - 0.14;
+    hoodDecal.position.set(0, bodyTop + 0.06, noseZ + 0.62);
+    g.add(hoodDecal);
+    const rearDecal = textPlane('POLICE', 1.3, 0.3, { font: 'bold 96px Arial', fg: navy });
+    rearDecal.position.set(0, bodyTop - 0.12, tailZ + 0.08);
+    rearDecal.rotation.y = Math.PI;
+    g.add(rearDecal);
+  }
+
+  // --- Taxi roof sign -----------------------------------------------------
+  if (spec.taxi) {
+    const sign = new THREE.Group();
+    bx(sign, flatMat(0xf5c518), 0.72, 0.2, 0.3, 0, 0, 0);
+    for (const rz of [-0.16, 0.16]) {
+      const t = textPlane('TAXI', 0.6, 0.15, { font: 'bold 90px Arial', fg: '#111111' });
+      t.position.set(0, 0, rz);
+      if (rz > 0) t.rotation.y = Math.PI;
+      sign.add(t);
+    }
+    sign.position.set(0, cabinY + 0.74, 0.05);
+    g.add(sign);
+    for (const s of [-1, 1]) {
+      addTextDecal(g, 'TAXI', 0.7, 0.22, s * (wid / 2 + 0.035), bodyTop - 0.2, 0.1, s * Math.PI / 2,
+        { font: 'bold 90px Arial', fg: '#111111' });
+    }
+  }
+
+  g.userData = { kind, name: spec.name, topSpeed: spec.top, wheels, lightBar, bodyColor: spec.color };
   return g;
 }
 
-// Police helicopter: white/dark-blue SOLMAR PD livery, rounded nose with a
-// glass canopy, tapered tail boom, tail fin + stabiliser, spinning main
-// rotor with a blur disc, spinning tail rotor, landing skids with struts,
-// a flashing red beacon and an aimed searchlight. Built bigger than the
-// old one so it reads clearly from the street.
+// ---------------------------------------------------------------------------
+// Helicopter — big, dark blue / white Solmar PD bird, like the reference:
+// white fuselage, navy belly stripe + navy roof, sloped glass canopy,
+// long tail boom with POLICE fin, 4-blade main rotor + blur disc,
+// 4-blade tail rotor, skids, red beacon, searchlight with a beam that
+// reaches the street. Front is -z. Group origin = fuselage centre.
+// ---------------------------------------------------------------------------
 export function makeHelicopter() {
   const g = new THREE.Group();
-  const white = 0xf2f2f2;
-  const navy = 0x1a3a8a;
-  const glassMat = new THREE.MeshLambertMaterial({ color: 0x16324a, emissive: 0x0a1a2a, emissiveIntensity: 0.5 });
+  const white = MAT.white;
+  const navy = MAT.navy;
 
-  // --- Fuselage: white body, navy belly stripe, rounded nose -------------
-  const body = box(3.0, 1.9, 5.2, white);
-  body.position.y = 0;
-  g.add(body);
-  const belly = box(3.02, 0.5, 5.22, navy);
-  belly.position.y = -0.55;
-  g.add(belly);
-  const nose = new THREE.Mesh(new THREE.SphereGeometry(1.1, 14, 10),
-    new THREE.MeshLambertMaterial({ color: white }));
-  nose.scale.set(1.35, 0.85, 1.3);
-  nose.position.set(0, -0.1, -2.6);
-  nose.castShadow = true;
+  // Fuselage: white body, navy belly stripe + navy roof panel.
+  bx(g, white, 2.1, 1.5, 3.6, 0, 0, 0);
+  bx(g, navy, 2.14, 0.34, 3.62, 0, -0.55, 0);
+  bx(g, navy, 1.9, 0.14, 3.3, 0, 0.8, 0);
+  // Rounded nose (front = -z).
+  const nose = new THREE.Mesh(sphGeo(1.02, 18, 14), white);
+  nose.scale.set(1.02, 0.72, 1.15);
+  nose.position.set(0, -0.05, -1.8);
   g.add(nose);
-  // Cockpit glass: sloped dark canopy over the nose.
-  const canopy = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.0, 1.7), glassMat);
-  canopy.position.set(0, 0.45, -2.0);
-  canopy.rotation.x = -0.3;
-  g.add(canopy);
-  // Side windows + rear side windows.
+  bx(g, navy, 2.0, 0.22, 0.5, 0, -0.62, -1.85);
+  // Sloped dark-glass canopy over the nose + side windows.
+  bx(g, MAT.glass, 1.7, 0.85, 0.9, 0, 0.28, -1.55, 0.5);
+  bx(g, MAT.glass, 1.55, 0.6, 0.7, 0, 0.18, -0.75, 0.18);
   for (const s of [-1, 1]) {
-    const win = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.8, 1.8), glassMat);
-    win.position.set(s * 1.52, 0.35, -0.6);
-    g.add(win);
-    const winR = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.6, 1.2), glassMat);
-    winR.position.set(s * 1.52, 0.3, 1.2);
-    g.add(winR);
-    // "SOLMAR PD" on the fuselage flanks.
-    const decal = textPlane('SOLMAR PD', 2.4, 0.55, { fg: '#1a3a8a', font: 'bold 72px Arial, sans-serif' });
-    decal.position.set(s * 1.53, -0.05, 0.4);
-    decal.rotation.y = s * Math.PI / 2;
-    g.add(decal);
+    bx(g, MAT.glass, 0.04, 0.62, 1.15, s * 1.06, 0.12, -0.35);
+    bx(g, MAT.glass, 0.04, 0.55, 0.9, s * 1.06, 0.12, 0.85);
+  }
+  // Rear cabin doors (white with navy outline) + side intake.
+  for (const s of [-1, 1]) {
+    bx(g, navy, 0.05, 0.9, 0.95, s * 1.06, -0.05, 0.85);
+    bx(g, white, 0.05, 0.74, 0.8, s * 1.07, -0.05, 0.85);
+  }
+  // SOLMAR PD on both flanks.
+  for (const s of [-1, 1]) {
+    addTextDecal(g, 'SOLMAR PD', 1.9, 0.34, s * 1.12, -0.28, 0.35, s * Math.PI / 2,
+      { font: 'bold 84px Arial', fg: '#14264d' });
   }
 
-  // --- Tail boom (tapered), fin, stabiliser ------------------------------
-  const boom = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.6, 5.2, 10),
-    new THREE.MeshLambertMaterial({ color: white }));
-  boom.rotation.x = Math.PI / 2;
-  boom.position.set(0, 0.35, 4.6);
-  boom.castShadow = true;
+  // Tail boom: tapered cylinder along +z, white with navy stripe underneath.
+  const boom = new THREE.Mesh(cylGeo(0.32, 0.62, 4.6, 12), white);
+  boom.rotation.x = Math.PI / 2; // axis Y -> Z; narrow end (+y) points +z
+  boom.position.set(0, 0.15, 3.9);
   g.add(boom);
-  const fin = box(0.22, 1.7, 1.3, white);
-  fin.position.set(0, 1.0, 7.0);
-  g.add(fin);
-  // "POLICE" on both faces of the tail fin.
+  const boomStripe = new THREE.Mesh(cylGeo(0.34, 0.6, 4.4, 12), navy);
+  boomStripe.rotation.x = Math.PI / 2;
+  boomStripe.scale.set(1, 1, 0.35);
+  boomStripe.position.set(0, -0.12, 3.9);
+  g.add(boomStripe);
+  // Tail fin (vertical) with POLICE on both faces + horizontal stabiliser.
+  bx(g, navy, 0.1, 1.5, 1.0, 0, 0.75, 6.0, -0.25);
   for (const s of [-1, 1]) {
-    const decal = textPlane('POLICE', 1.0, 0.45, { fg: '#1a3a8a', font: 'bold 72px Arial, sans-serif' });
-    decal.position.set(s * 0.13, 1.0, 7.0);
-    decal.rotation.y = s * Math.PI / 2;
-    g.add(decal);
+    addTextDecal(g, 'POLICE', 0.85, 0.24, s * 0.075, 0.85, 6.02, s * Math.PI / 2,
+      { font: 'bold 90px Arial', fg: '#ffffff' });
   }
-  const stab = box(2.6, 0.1, 0.8, white);
-  stab.position.set(0, 0.5, 6.9);
-  g.add(stab);
+  bx(g, white, 0.08, 1.0, 0.7, 0, 0.6, 5.7, -0.25);
+  bx(g, navy, 2.4, 0.08, 0.55, 0, 0.15, 5.6);
 
-  // --- Tail rotor: 4-blade cross on the fin's left side, spins on x -----
+  // Main rotor: mast + two crossed long blades (4 blades) + blur disc.
+  const rotor = new THREE.Group();
+  rotor.position.set(0, 1.05, 0);
+  const mast = new THREE.Mesh(cylGeo(0.14, 0.18, 0.5, 10), MAT.darkTrim);
+  mast.position.y = -0.1;
+  rotor.add(mast);
+  for (const a of [0, Math.PI / 2]) {
+    const blade = new THREE.Mesh(boxGeo(7.6, 0.06, 0.42), MAT.darkTrim);
+    blade.rotation.y = a;
+    rotor.add(blade);
+    // Red tip stripes so the spin reads in stills.
+    for (const s of [-1, 1]) {
+      const tip = new THREE.Mesh(boxGeo(0.5, 0.07, 0.43), flatMat(0xc22a2a));
+      tip.position.set(s * 3.5, 0, 0);
+      tip.rotation.y = a;
+      rotor.add(tip);
+    }
+  }
+  const blur = new THREE.Mesh(
+    new THREE.CircleGeometry(3.85, 40),
+    new THREE.MeshBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.14, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  blur.rotation.x = -Math.PI / 2;
+  blur.position.y = 0.06;
+  rotor.add(blur);
+  g.add(rotor);
+
+  // Tail rotor: 4 blades in the YZ plane, spun around local X.
   const tailRotor = new THREE.Group();
-  const trMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
-  const trHub = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.24, 8), trMat);
-  trHub.rotation.z = Math.PI / 2;
-  tailRotor.add(trHub);
-  const trBladeV = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.9, 0.18), trMat);
-  tailRotor.add(trBladeV);
-  const trBladeH = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.18, 1.9), trMat);
-  tailRotor.add(trBladeH);
-  tailRotor.position.set(-0.38, 1.0, 7.0);
+  tailRotor.position.set(0.42, 0.45, 5.85);
+  const tailHub = new THREE.Mesh(cylGeo(0.09, 0.09, 0.3, 8), MAT.darkTrim);
+  tailHub.rotation.z = Math.PI / 2;
+  tailRotor.add(tailHub);
+  for (let i = 0; i < 4; i++) {
+    const b = new THREE.Mesh(boxGeo(0.05, 1.15, 0.16), MAT.darkTrim);
+    b.rotation.x = (i * Math.PI) / 2;
+    tailRotor.add(b);
+  }
   g.add(tailRotor);
 
-  // --- Landing skids + struts --------------------------------------------
+  // Landing skids: two long tubes + angled struts.
   for (const s of [-1, 1]) {
-    const skid = box(0.16, 0.16, 4.6, 0x222222);
-    skid.position.set(s * 1.35, -1.35, 0);
+    const skid = new THREE.Mesh(cylGeo(0.07, 0.07, 3.4, 8), MAT.darkTrim);
+    skid.rotation.x = Math.PI / 2;
+    skid.position.set(s * 0.95, -1.25, -0.1);
     g.add(skid);
-    for (const zz of [-1.4, 1.4]) {
-      const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.0, 8),
-        new THREE.MeshLambertMaterial({ color: 0x333333 }));
-      strut.position.set(s * 1.05, -1.1, zz);
-      strut.rotation.z = s > 0 ? 0.5 : -0.5;
+    for (const sz of [-0.9, 0.7]) {
+      const strut = new THREE.Mesh(cylGeo(0.05, 0.05, 0.75, 8), MAT.darkTrim);
+      strut.position.set(s * 0.85, -0.95, sz);
+      strut.rotation.z = s * 0.5;
       g.add(strut);
     }
   }
 
-  // --- Main rotor: mast, hub, 4 blades + a blur disc ---------------------
-  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.9, 8),
-    new THREE.MeshLambertMaterial({ color: 0x333333 }));
-  mast.position.y = 1.35;
-  g.add(mast);
-  const rotor = new THREE.Group();
-  const bladeMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
-  const hub = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.25, 0.5), bladeMat);
-  rotor.add(hub);
-  for (const a of [0, Math.PI / 2]) {
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(13, 0.08, 0.55), bladeMat);
-    blade.rotation.y = a;
-    rotor.add(blade);
-  }
-  rotor.position.y = 1.95;
-  g.add(rotor);
-  // Blur disc: reads as a spinning rotor even in a still screenshot.
-  const disc = new THREE.Mesh(new THREE.CircleGeometry(6.6, 40),
-    new THREE.MeshBasicMaterial({ color: 0xdddddd, transparent: true, opacity: 0.13, side: THREE.DoubleSide, depthWrite: false }));
-  disc.rotation.x = -Math.PI / 2;
-  disc.position.y = 1.92;
-  g.add(disc);
-
-  // --- Red anti-collision beacon (flashes; pulsed by police.js) ----------
-  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8),
-    new THREE.MeshLambertMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 2 }));
-  beacon.position.set(0, 1.15, 0.5);
+  // Red anti-collision beacon on the tail fin top.
+  const beaconMat = new THREE.MeshPhongMaterial({ color: 0xff2020, emissive: 0xff1010, emissiveIntensity: 0.3, shininess: 60 });
+  const beacon = new THREE.Mesh(sphGeo(0.14, 10, 8), beaconMat);
+  beacon.position.set(0, 1.62, 5.85);
   g.add(beacon);
 
-  // --- Searchlight: lamp + a long aimed beam ----------------------------
-  // The beam points down-forward (toward the nose / the player below) and
-  // is long enough to reach the street from the helicopter's orbit.
+  // Searchlight under the nose: lamp + long beam cone, tilted down-forward.
   const spotGroup = new THREE.Group();
-  spotGroup.position.set(0, -1.0, -0.8);
-  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8),
-    new THREE.MeshBasicMaterial({ color: 0xfff6c9 }));
-  spotGroup.add(lamp);
-  const beamLen = 55;
-  const outer = new THREE.Mesh(
-    new THREE.ConeGeometry(6, beamLen, 14, 1, true),
-    new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.13, side: THREE.DoubleSide, depthWrite: false }));
-  outer.rotation.x = Math.PI / 2;
-  outer.position.z = -beamLen / 2;
-  spotGroup.add(outer);
-  const inner = new THREE.Mesh(
-    new THREE.ConeGeometry(2.6, beamLen, 12, 1, true),
-    new THREE.MeshBasicMaterial({ color: 0xfff6c9, transparent: true, opacity: 0.2, side: THREE.DoubleSide, depthWrite: false }));
-  inner.rotation.x = Math.PI / 2;
-  inner.position.z = -beamLen / 2;
-  spotGroup.add(inner);
-  spotGroup.rotation.x = -0.55; // tilt the beam down toward the player
+  spotGroup.position.set(0, -0.85, -1.7);
+  const lampBody = new THREE.Mesh(cylGeo(0.22, 0.26, 0.3, 12), MAT.darkTrim);
+  lampBody.rotation.x = Math.PI / 2;
+  spotGroup.add(lampBody);
+  const lens = new THREE.Mesh(new THREE.CircleGeometry(0.2, 16), MAT.headlight);
+  lens.position.set(0, -0.05, -0.16);
+  lens.rotation.x = 0.35;
+  spotGroup.add(lens);
+  const beam = new THREE.Mesh(
+    new THREE.ConeGeometry(2.4, 16, 20, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xfff3b0, transparent: true, opacity: 0.09, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  // Cone apex is at +h/2; centred 8 below the lamp the apex sits at the
+  // lamp and the beam widens downward. A small +x tilt throws the wide
+  // end forward, so the pool lands ahead of the helicopter.
+  beam.position.set(0, -8, -2.2);
+  beam.rotation.x = 0.28;
+  spotGroup.add(beam);
   g.add(spotGroup);
 
   g.userData = { rotor, tailRotor, beacon, spotGroup };
   return g;
 }
 
-// The tank: slow, heavy, joins at 5 stars. Hull, turret, barrel, tracks.
+// ---------------------------------------------------------------------------
+// Tank — olive hull, dark tracks, turret + long barrel, white star.
+// Front is -z; the caller rotates userData.turret (rotation.y) to aim.
+// ---------------------------------------------------------------------------
 export function makeTank() {
   const g = new THREE.Group();
-  const hull = box(3.4, 1.3, 5.6, 0x4a5a3a);
-  hull.position.y = 1.0;
-  g.add(hull);
+  const olive = MAT.olive, oliveDark = MAT.oliveDark;
+
+  // Hull: main box + sloped glacis plate at the front.
+  bx(g, olive, 2.5, 0.85, 4.1, 0, 0.85, 0);
+  bx(g, olive, 2.4, 0.7, 1.0, 0, 0.95, -2.1, 0.5);
+  bx(g, oliveDark, 2.55, 0.18, 4.15, 0, 0.5, 0);
+  // Tracks: dark boxes on both sides with road-wheel discs.
   for (const s of [-1, 1]) {
-    const track = box(0.9, 1.0, 5.8, 0x222222);
-    track.position.set(s * 1.7, 0.5, 0);
-    g.add(track);
+    bx(g, MAT.track, 0.72, 0.95, 4.5, s * 1.55, 0.48, 0);
+    for (let i = 0; i < 5; i++) {
+      const w = new THREE.Mesh(cylGeo(0.3, 0.3, 0.06, 12), flatMat(0x3a3d33));
+      w.rotation.z = Math.PI / 2;
+      w.position.set(s * 1.93, 0.42, -1.6 + i * 0.8);
+      g.add(w);
+    }
   }
-  const turret = box(2.2, 0.9, 2.6, 0x55663f);
-  turret.position.set(0, 2.05, 0.2);
-  g.add(turret);
-  const barrel = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.16, 0.16, 4.2, 8),
-    new THREE.MeshLambertMaterial({ color: 0x333333 }));
+  // White star on both hull sides.
+  for (const s of [-1, 1]) {
+    const star = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.7, 0.7),
+      new THREE.MeshBasicMaterial({ map: STAR_TEX, transparent: true, depthWrite: false }),
+    );
+    star.position.set(s * 1.27, 0.95, 0.2);
+    star.rotation.y = s * Math.PI / 2;
+    star.renderOrder = 3;
+    g.add(star);
+  }
+  // Front headlight + tow hooks.
+  for (const s of [-1, 1]) {
+    bx(g, MAT.headlight, 0.2, 0.12, 0.06, s * 0.9, 1.0, -2.55);
+  }
+
+  // Turret group (origin at turret centre so rotation.y aims it).
+  const turret = new THREE.Group();
+  turret.position.set(0, 1.32, 0.25);
+  bx(turret, olive, 1.7, 0.62, 2.1, 0, 0.31, 0);
+  bx(turret, oliveDark, 1.78, 0.16, 2.15, 0, 0.05, 0);
+  // Commander's hatch + periscope.
+  const hatch = new THREE.Mesh(cylGeo(0.32, 0.32, 0.1, 12), oliveDark);
+  hatch.position.set(-0.4, 0.68, 0.3);
+  turret.add(hatch);
+  bx(turret, MAT.glass, 0.3, 0.12, 0.2, 0.45, 0.68, -0.2);
+  // Long barrel pointing forward (-z) + muzzle brake.
+  const barrel = new THREE.Mesh(cylGeo(0.11, 0.13, 2.7, 12), MAT.darkTrim);
   barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, 2.05, -2.6);
-  g.add(barrel);
-  const star = box(0.9, 0.9, 0.06, 0xffffff);
-  star.position.set(1.72, 1.2, 0);
-  star.rotation.y = Math.PI / 2;
-  g.add(star);
+  barrel.position.set(0, 0.38, -2.2);
+  turret.add(barrel);
+  const brake = new THREE.Mesh(cylGeo(0.17, 0.17, 0.4, 12), MAT.darkTrim);
+  brake.rotation.x = Math.PI / 2;
+  brake.position.set(0, 0.38, -3.35);
+  turret.add(brake);
+  g.add(turret);
+
   g.userData = { turret, barrel };
   return g;
 }
 
-// On-foot character: a simple articulated figure (torso, head, legs, arms).
+// ---------------------------------------------------------------------------
+// Person — cheap articulated figure. Legs/arms pivot at hip/shoulder
+// (geometry translated so the group origin is the joint), so callers can
+// swing them with rotation.x. ~14 meshes each; traffic spawns ~38.
+// ---------------------------------------------------------------------------
+const SKIN = flatMat(0xd9a066);
+const HAIR = flatMat(0x1c1410);
+function limbGeo(w, h, d) {
+  const k = `limb${w}|${h}|${d}`;
+  let geo = _geo.get(k);
+  if (!geo) {
+    geo = new THREE.BoxGeometry(w, h, d);
+    geo.translate(0, -h / 2, 0); // pivot at the top (joint)
+    _geo.set(k, geo);
+  }
+  return geo;
+}
+
 export function makePerson(shirt = 0x2ea88a, pants = 0x2a3a55) {
   const g = new THREE.Group();
-  const torso = box(0.62, 0.72, 0.34, shirt);
-  torso.position.y = 1.05;
-  g.add(torso);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8),
-    new THREE.MeshLambertMaterial({ color: 0xd8a077 }));
-  head.position.y = 1.62;
-  head.castShadow = true;
-  g.add(head);
-  const cap = box(0.5, 0.12, 0.5, 0x222222);
-  cap.position.y = 1.82;
-  g.add(cap);
+  const shirtMat = flatMat(shirt);
+  const pantsMat = flatMat(pants);
+
   const legs = [];
   for (const s of [-1, 1]) {
-    const leg = box(0.22, 0.68, 0.24, pants);
-    leg.position.set(s * 0.16, 0.34, 0);
+    const leg = new THREE.Mesh(limbGeo(0.2, 0.78, 0.22), pantsMat);
+    leg.position.set(s * 0.13, 0.8, 0);
     g.add(leg);
     legs.push(leg);
+    const shoe = new THREE.Mesh(boxGeo(0.22, 0.1, 0.34), MAT.black);
+    shoe.position.set(0, -0.74, 0.05);
+    leg.add(shoe);
   }
+  const torso = new THREE.Mesh(boxGeo(0.56, 0.62, 0.3), shirtMat);
+  torso.position.set(0, 1.12, 0);
+  g.add(torso);
+  const head = new THREE.Mesh(boxGeo(0.32, 0.34, 0.3), SKIN);
+  head.position.set(0, 1.62, 0);
+  g.add(head);
+  // Cap / hat.
+  const cap = new THREE.Mesh(boxGeo(0.36, 0.1, 0.34), shirtMat);
+  cap.position.set(0, 1.82, 0);
+  g.add(cap);
+  bx(g, shirtMat, 0.36, 0.04, 0.16, 0, 1.78, -0.22);
   const arms = [];
   for (const s of [-1, 1]) {
-    const arm = box(0.16, 0.6, 0.18, shirt);
-    arm.position.set(s * 0.4, 1.05, 0);
+    const arm = new THREE.Mesh(limbGeo(0.16, 0.62, 0.18), shirtMat);
+    arm.position.set(s * 0.36, 1.4, 0);
     g.add(arm);
     arms.push(arm);
+    const hand = new THREE.Mesh(boxGeo(0.15, 0.14, 0.16), SKIN);
+    hand.position.set(0, -0.62, 0);
+    arm.add(hand);
   }
+
   g.userData = { legs, arms, torso, head };
   return g;
 }
 
-// A weapon pickup / health / armour box on the street.
+// ---------------------------------------------------------------------------
+// Pickups — glowing core box + flat ring on the ground. The caller spins
+// the whole group (rotation.y) and bobs it.
+// ---------------------------------------------------------------------------
+const PICKUP_COLORS = {
+  health: 0xff4d6d, // pink/red
+  armour: 0x3aa0ff, // blue
+  weapon: 0xffc93a, // gold
+};
+
 export function makePickup(kind) {
   const g = new THREE.Group();
-  const color = kind === 'health' ? 0xff4d6d : kind === 'armour' ? 0x4da3ff : 0xffd75e;
-  const core = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7),
-    new THREE.MeshLambertMaterial({ color, emissive: color, emissiveIntensity: 0.7 }));
-  core.position.y = 0.9;
+  const color = PICKUP_COLORS[kind] ?? PICKUP_COLORS.weapon;
+  const coreMat = new THREE.MeshPhongMaterial({ color, emissive: color, emissiveIntensity: 1.4, shininess: 60 });
+  const core = new THREE.Mesh(boxGeo(0.7, 0.7, 0.7), coreMat);
+  core.position.y = 0.85;
+  core.rotation.y = Math.PI / 4;
   g.add(core);
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.08, 8, 24),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 }));
+  // Bright inner cube so the core reads as glowing from every angle.
+  const inner = new THREE.Mesh(boxGeo(0.4, 0.4, 0.4), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  inner.position.y = 0.85;
+  inner.rotation.y = Math.PI / 4;
+  g.add(inner);
+  const ringMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.06, 8, 28), ringMat);
   ring.rotation.x = Math.PI / 2;
-  ring.position.y = 0.35;
+  ring.position.y = 0.08;
   g.add(ring);
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(0.95, 24),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.14, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = 0.06;
+  g.add(disc);
+
   g.userData = { kind, core, ring };
   return g;
 }

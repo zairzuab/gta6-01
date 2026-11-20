@@ -4,11 +4,14 @@
 [![rank](https://make.fun/badge/gta6-01/zairzuab/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/zairzuab/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-**VICE HEAT — Solmar Pursuit.** An original open-world crime game that runs
+**VICE HEAT — Solmar Pursuit** (v2 rebuild). An original open-world crime game that runs
 offline in a desktop browser from static files. You are Dante Vega, getaway
 driver for the Solmar crew: steal cars, outrun the Solmar PD through a
 sun-soaked coastal city, and lose five stars of wanted level — cruisers,
 a helicopter, roadblocks with spike strips, and a tank at the end of the line.
+The v2 build rebuilds the 3D presentation from scratch: detailed procedural
+building facades with balconies and striped shop awnings, lush palm-lined
+avenues, eight distinct car models, and a big police helicopter overhead.
 
 ## What is in the game
 

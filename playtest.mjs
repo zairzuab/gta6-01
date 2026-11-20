@@ -5,7 +5,7 @@
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 
-const entry = '/home/hatch/workspace/makefun/gta6-01-entry';
+const entry = '/home/hatch/workspace/makefun/gta6-01-entry-v2';
 const PORT = 8933;
 const server = spawn('node', ['serve.ts', '--port', String(PORT)], { cwd: entry, stdio: 'pipe' });
 await new Promise((r) => setTimeout(r, 1500));
