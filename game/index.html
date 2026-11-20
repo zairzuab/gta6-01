@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VICE HEAT — Solmar Pursuit</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1220;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+  #app { position: fixed; inset: 0; }
+  #scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .hud { position: absolute; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.8);
+    user-select: none; pointer-events: none; z-index: 5; }
+  .panel { background: rgba(8, 14, 26, .72); border: 1px solid rgba(255,255,255,.14);
+    border-radius: 6px; padding: 8px 10px; backdrop-filter: blur(2px); }
+  /* top-left mission card */
+  #mission { top: 14px; left: 14px; width: 300px; }
+  #mission .m-count { font-size: 11px; letter-spacing: 2px; color: #ffd75e; font-weight: 700; }
+  #mission .m-name { font-size: 26px; font-weight: 900; letter-spacing: 1px; line-height: 1.05; }
+  #mission .m-stage { margin-top: 4px; font-size: 11px; color: #cfe3ff; }
+  #mission .m-stage b { color: #ffd75e; }
+  #mission .m-bar { height: 5px; background: rgba(255,255,255,.18); border-radius: 3px;
+    margin-top: 5px; overflow: hidden; }
+  #mission .m-bar > div { height: 100%; background: #ffd75e; width: 25%; }
+  #mission .m-obj { margin-top: 6px; font-size: 12.5px; line-height: 1.35; color: #f2f6ff; }
+  #mission .m-obj .sight { color: #ff5d5d; font-weight: 700; }
+  /* top-right wanted + stats */
+  #stats { top: 14px; right: 14px; width: 268px; text-align: left; }
+  #stats .wanted { display: flex; justify-content: space-between; align-items: baseline; }
+  #stats .wanted .w-label { font-size: 12px; letter-spacing: 2px; color: #ffb3b3; font-weight: 700; }
+  #stars { font-size: 19px; letter-spacing: 2px; line-height: 1; }
+  #stars .on { color: #ffd75e; }
+  #stars .off { color: rgba(255,255,255,.30); }
+  #stats .sight { font-size: 11px; color: #ff5d5d; font-weight: 700; text-align: right; }
+  #stats .money { font-size: 24px; font-weight: 900; color: #7dffa8; margin-top: 2px; }
+  #stats .money small { font-size: 12px; color: #cfe3ff; font-weight: 600; float: right; margin-top: 8px; }
+  .bar-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 11px; }
+  .bar-row .lbl { width: 52px; letter-spacing: 1px; color: #cfe3ff; font-weight: 700; }
+  .bar { flex: 1; height: 8px; background: rgba(255,255,255,.16); border-radius: 4px; overflow: hidden; }
+  .bar > div { height: 100%; }
+  #healthBar { background: #ff4d6d; width: 100%; }
+  #armourBar { background: #4da3ff; width: 64%; }
+  .bar-row .val { width: 26px; text-align: right; font-weight: 700; }
+  #weaponLine { margin-top: 6px; font-size: 13px; font-weight: 800; letter-spacing: .5px; }
+  #weaponLine .ammo { color: #ffd75e; }
+  #rankLine { font-size: 11px; color: #ffd75e; margin-top: 2px; letter-spacing: .5px; }
+  #slots { display: flex; gap: 5px; margin-top: 7px; }
+  .slot { flex: 1; height: 34px; background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.16);
+    border-radius: 4px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-size: 9px; color: #cfe3ff; }
+  .slot .ic { font-size: 15px; line-height: 1; }
+  .slot.active { background: rgba(255,215,94,.85); color: #20242e; border-color: #ffd75e; }
+  .slot .key { font-size: 8px; opacity: .7; }
+  /* dispatch list */
+  #dispatch { top: 268px; right: 14px; width: 268px; font-size: 11.5px; }
+  #dispatch .d-head { font-size: 11px; letter-spacing: 2px; color: #9fd0ff; font-weight: 700;
+    border-bottom: 1px solid rgba(255,255,255,.15); padding-bottom: 3px; margin-bottom: 4px; }
+  #dispatch .unit { display: flex; justify-content: space-between; padding: 2px 0; }
+  #dispatch .unit .call { font-weight: 800; }
+  #dispatch .unit .kind { color: #cfe3ff; }
+  #dispatch .unit .dist { color: #ffd75e; font-weight: 700; }
+  #dispatch .unit .st { font-weight: 800; }
+  #dispatch .st.pursuit { color: #ff5d5d; }
+  #dispatch .st.pit { color: #ff9f43; }
+  #dispatch .st.box { color: #ff9f43; }
+  #dispatch .st.air { color: #4da3ff; }
+  /* bottom-left minimap */
+  #mapBox { left: 14px; bottom: 14px; width: 218px; }
+  #minimap { width: 200px; height: 200px; border-radius: 50%; border: 3px solid rgba(255,255,255,.75);
+    background: #0e1a2e; display: block; box-shadow: 0 2px 10px rgba(0,0,0,.6); }
+  #locName { margin-top: 6px; font-size: 15px; font-weight: 900; letter-spacing: .5px; }
+  #locName small { display: block; font-size: 11px; color: #ffd75e; letter-spacing: 1px; }
+  /* bottom-right speedometer */
+  #speedo { right: 14px; bottom: 14px; width: 210px; text-align: right; }
+  #speedVal { font-size: 44px; font-weight: 900; line-height: .95; }
+  #speedVal small { font-size: 14px; color: #cfe3ff; font-weight: 700; }
+  #carName { font-size: 15px; font-weight: 800; letter-spacing: 1px; }
+  #engineRow { margin-top: 4px; }
+  #engineRow .bar { display: inline-block; width: 150px; vertical-align: middle; }
+  #engineRow .bar > div { background: #ffd75e; }
+  #radioLine { font-size: 11px; color: #cfe3ff; margin-top: 4px; }
+  /* bottom-center radio ticker */
+  #ticker { left: 50%; bottom: 16px; transform: translateX(-50%); width: 520px; max-width: 46vw;
+    display: flex; gap: 10px; align-items: center; }
+  #ticker .avatar { width: 44px; height: 44px; border-radius: 6px; background: #2ea88a;
+    display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 900;
+    color: #fff; flex: none; }
+  #ticker .t-name { color: #7dffa8; font-weight: 800; font-size: 12px; }
+  #ticker .t-text { font-size: 12.5px; line-height: 1.3; }
+  /* center messages */
+  #centerMsg { left: 50%; top: 22%; transform: translateX(-50%); text-align: center; width: 640px; }
+  #centerMsg .big { font-size: 40px; font-weight: 900; letter-spacing: 3px; color: #ffd75e; }
+  #centerMsg .sub { font-size: 15px; color: #fff; margin-top: 4px; }
+  #centerMsg .big.red { color: #ff5d5d; }
+  /* damage flash / wanted pulse */
+  #dmgFlash { position: absolute; inset: 0; pointer-events: none; z-index: 4;
+    box-shadow: inset 0 0 120px rgba(255,0,0,0); transition: box-shadow .15s; }
+  /* start / pause / gameover screens */
+  .screen { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center;
+    justify-content: center; background: rgba(5, 10, 20, .78); color: #fff; }
+  .screen.hidden { display: none; }
+  .card { width: 620px; max-width: 92vw; background: rgba(10, 18, 34, .92);
+    border: 1px solid rgba(255,215,94,.4); border-radius: 12px; padding: 26px 30px;
+    box-shadow: 0 10px 60px rgba(0,0,0,.7); }
+  .card h1 { margin: 0; font-size: 54px; letter-spacing: 4px; font-weight: 900; color: #ffd75e; line-height: 1; }
+  .card h1 span { color: #ff5d5d; }
+  .card h2 { margin: 2px 0 0; font-size: 15px; letter-spacing: 6px; color: #9fd0ff; font-weight: 700; }
+  .card p { font-size: 14px; line-height: 1.5; color: #dfe8ff; }
+  .card .missions { margin: 12px 0; }
+  .card .missions .mi { display: flex; justify-content: space-between; padding: 7px 10px;
+    border: 1px solid rgba(255,255,255,.14); border-radius: 6px; margin-top: 6px; font-size: 13px;
+    cursor: pointer; }
+  .card .missions .mi:hover { border-color: #ffd75e; }
+  .card .missions .mi.done { color: #7dffa8; }
+  .card .missions .mi .tag { color: #ffd75e; font-weight: 800; }
+  .card .keys { font-size: 12.5px; line-height: 1.8; color: #cfe3ff; }
+  .card .keys b { color: #fff; background: rgba(255,255,255,.14); border-radius: 4px; padding: 1px 6px; }
+  .btn { display: inline-block; margin-top: 14px; background: #ffd75e; color: #20242e; font-weight: 900;
+    font-size: 16px; letter-spacing: 1px; border: none; border-radius: 8px; padding: 12px 26px; cursor: pointer; }
+  .btn:hover { background: #ffe27a; }
+  .btn.ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.4); margin-left: 8px; }
+  #help { position: absolute; right: 14px; bottom: 190px; font-size: 11px; color: rgba(255,255,255,.75);
+    text-align: right; line-height: 1.6; }
+  #help b { color: #ffd75e; }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px;
+    z-index: 6; pointer-events: none; display: none; }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff;
+    box-shadow: 0 0 3px #000; }
+  #crosshair::before { left: 10px; top: 0; width: 2px; height: 22px; }
+  #crosshair::after { left: 0; top: 10px; width: 22px; height: 2px; }
+  #fpsTag { position: absolute; left: 14px; top: 50%; font-size: 10px; color: rgba(255,255,255,.45); }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+  <div id="dmgFlash"></div>
+
+  <div class="hud panel" id="mission">
+    <div class="m-count" id="mCount">MISSION 1 OF 3</div>
+    <div class="m-name" id="mName">ARCO RUN</div>
+    <div class="m-stage" id="mStage">STAGE 1 OF 3 · <b>GET IN THE CAR</b></div>
+    <div class="m-bar"><div id="mBarFill"></div></div>
+    <div class="m-obj" id="mObj">Get in your car on Avenida del Sol.</div>
+  </div>
+
+  <div class="hud panel" id="stats">
+    <div class="wanted"><span class="w-label">WANTED</span><span id="stars"></span></div>
+    <div class="sight" id="sightLine">IN SIGHT</div>
+    <div class="money"><span id="money">$48,250</span><small id="clock">16:24</small></div>
+    <div class="bar-row"><span class="lbl">HEALTH</span><div class="bar"><div id="healthBar"></div></div><span class="val" id="healthVal">86</span></div>
+    <div class="bar-row"><span class="lbl">ARMOUR</span><div class="bar"><div id="armourBar"></div></div><span class="val" id="armourVal">64</span></div>
+    <div id="weaponLine"><span id="weaponName">ZUMBADOR MP</span> <span class="ammo" id="weaponAmmo">32 / 148</span></div>
+    <div id="rankLine">RANK 5 · CREW BOSS · 2450 RESPECT</div>
+    <div id="slots"></div>
+  </div>
+
+  <div class="hud panel" id="dispatch">
+    <div class="d-head">SOLMAR PD DISPATCH</div>
+    <div id="dispatchList"></div>
+  </div>
+
+  <div class="hud" id="mapBox">
+    <canvas id="minimap" width="200" height="200"></canvas>
+    <div id="locName">PLAYA LARGA<small>Avenida del Sol</small></div>
+  </div>
+
+  <div class="hud" id="speedo">
+    <div id="speedVal">0 <small>KM/H</small></div>
+    <div id="carName">CORSA BRISA GT</div>
+    <div id="engineRow"><span style="font-size:11px;color:#cfe3ff">ENGINE</span>
+      <div class="bar"><div id="engineBar" style="width:93%"></div></div>
+      <span id="engineVal" style="font-size:11px;font-weight:700">93%</span></div>
+    <div id="radioLine">FM Radio Verano 97.3</div>
+  </div>
+
+  <div class="hud panel" id="ticker">
+    <div class="avatar" id="tickerAvatar">K</div>
+    <div><div class="t-name" id="tickerName">KIT</div><div class="t-text" id="tickerText">Roadblock on Avenida del Sol, two blocks up. Spikes too. Cut left at the Coral Reina!</div></div>
+  </div>
+
+  <div class="hud" id="centerMsg"><div class="big" id="centerBig"></div><div class="sub" id="centerSub"></div></div>
+
+  <div id="crosshair"></div>
+  <div class="hud" id="help">
+    <b>W A S D</b> drive / walk · <b>SPACE</b> handbrake<br>
+    <b>E</b> enter / exit car · <b>F</b> steal car<br>
+    <b>CLICK</b> shoot · <b>R</b> reload · <b>1–5</b> weapon<br>
+    <b>P</b> pause · <b>M</b> mute · <b>C</b> camera
+  </div>
+  <div class="hud" id="fpsTag"></div>
+
+  <div class="screen" id="startScreen">
+    <div class="card">
+      <h1>VICE <span>HEAT</span></h1>
+      <h2>SOLMAR PURSUIT · AN ORIGINAL OPEN-WORLD CRIME GAME</h2>
+      <p>You are <b>Dante Vega</b>, getaway driver for the Solmar crew. The case is in hand,
+      the whole Solmar PD is on you, and the only way out is through the heat.
+      Drive, steal, shoot and lose five stars of wanted level across a sun-soaked
+      coastal city — palms, avenues, a Ferris wheel on the pier, and a tank at the
+      end of the line.</p>
+      <div class="missions" id="missionList"></div>
+      <div class="keys">
+        <b>W A S D</b> drive / walk &nbsp; <b>SPACE</b> handbrake &nbsp; <b>E</b> enter / exit car<br>
+        <b>F</b> steal nearest car &nbsp; <b>CLICK</b> shoot &nbsp; <b>R</b> reload &nbsp; <b>1–5</b> switch weapon<br>
+        <b>P</b> pause &nbsp; <b>M</b> mute &nbsp; <b>C</b> camera &nbsp; progress saves automatically
+      </div>
+      <button class="btn" id="playBtn">▶ START ENGINE</button>
+      <button class="btn ghost" id="continueBtn">CONTINUE</button>
+    </div>
+  </div>
+
+  <div class="screen hidden" id="pauseScreen">
+    <div class="card">
+      <h1 style="font-size:40px">PAUSED</h1>
+      <p>Take a breath, Dante. The heat waits for no one — except now.</p>
+      <div class="keys" id="pauseStats"></div>
+      <button class="btn" id="resumeBtn">RESUME</button>
+      <button class="btn ghost" id="quitBtn">QUIT TO MENU</button>
+    </div>
+  </div>
+
+  <div class="screen hidden" id="endScreen">
+    <div class="card">
+      <h1 style="font-size:40px" id="endTitle">BUSTED</h1>
+      <p id="endText"></p>
+      <button class="btn" id="againBtn">PLAY AGAIN</button>
+      <button class="btn ghost" id="menuBtn">MAIN MENU</button>
+    </div>
+  </div>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
